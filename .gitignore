@@ -1,0 +1,14 @@
+data/
+.venv/
+.venv-sad/
+tools/
+models/
+__pycache__/
+qa/node_modules/
+qa/*.png
+qa/test-job.json
+config.json
+.runtime/
+.cache/
+dist/
+*.log

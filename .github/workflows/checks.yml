@@ -1,0 +1,29 @@
+name: Source checks
+on: [push, pull_request]
+jobs:
+  source:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Python and JavaScript syntax
+        run: |
+          python -m py_compile server.py studio.py voice_worker.py download_assets.py verify_install.py verify_setup.py
+          node --check web/app.js
+          node --check web/enhancements.js
+      - name: Installer syntax
+        shell: powershell
+        run: |
+          $tokens=$null; $parseErrors=$null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'setup.ps1'),[ref]$tokens,[ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+      - name: Check published file boundaries
+        shell: powershell
+        run: |
+          $unexpected=git ls-files | Where-Object { $_ -match '^(data|models|tools|\.venv|\.venv-sad|\.runtime|\.cache)/' -or $_ -eq 'config.json' }
+          if ($unexpected) { throw "Private/runtime files tracked: $unexpected" }
