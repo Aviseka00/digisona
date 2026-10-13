@@ -113,7 +113,7 @@ def enqueue(obj):
             spoken = re.sub(r'(?<!\w)'+re.escape(original)+r'(?!\w)',lambda _:replacement,spoken,flags=re.I)
     if len(spoken)>1600: raise ValueError('Pronunciation substitutions made the script too long')
     if not (p / ('voice-'+tone+'.webm')).exists(): raise ValueError('Record or import the selected voice tone first')
-    if kind=='video' and not (p / 'face.webm').exists(): raise ValueError('Record or import a face video first')
+    if kind=='video' and not ((p / 'portrait.png').exists() or (p / 'face.webm').exists()): raise ValueError('Upload a photo or record/import a face video first')
     info,cfg,py,sad=status()
     if not info['ready']: raise ValueError('Complete local model setup first')
     if composition=='full' and not (sad / 'checkpoints/mapping_00109-model.pth.tar').exists(): raise ValueError('Full-frame checkpoint is not installed yet; choose portrait')
@@ -180,7 +180,7 @@ def worker():
             if not videos: raise RuntimeError('Video model did not produce an MP4')
             source = max(videos, key=lambda p: p.stat().st_mtime)
             update(jid, stage='Finishing your MP4',step='encode')
-            run(jid, ['ffmpeg','-y','-i',str(source),'-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart',str(work / 'output.mp4')])
+            run(jid, ['ffmpeg','-y','-i',str(source),'-vf','pad=ceil(iw/2)*2:ceil(ih/2)*2','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart',str(work / 'output.mp4')])
             if not (work / 'output.mp4').stat().st_size: raise RuntimeError('Empty output video')
             studio.probe(work / 'output.mp4')
             update(jid, state='done', step='done',stage='Video ready',completed=time.time(),output='/media/jobs/' + jid + '/output.mp4')
@@ -253,12 +253,28 @@ class Handler(BaseHTTPRequestHandler):
             self.guard(); route = urlparse(self.path).path
             if route.startswith('/api/upload/'):
                 _,_,_,pid,kind = route.split('/')
-                if kind not in ('face','voice-normal','voice-happy','voice-calm','voice-serious'): raise ValueError('Invalid recording type')
+                if kind not in ('face','photo','voice-normal','voice-happy','voice-calm','voice-serious'): raise ValueError('Invalid recording type')
                 p = profile_dir(pid)
                 blob = self.body(MAX_UPLOAD)
                 with LOCK:
                     if any(read_json(q)['profile'] == pid and read_json(q)['state'] in ('queued','running') for q in JOBS.glob('*.json')):
                         raise ValueError('Wait for generation to finish before replacing this persona recording')
+                    if kind=='photo':
+                        if len(blob)>20*1024*1024: raise ValueError('Photos must be smaller than 20 MB')
+                        tmp=p / 'photo.upload'; converted=p / 'photo.converted.png'; tmp.write_bytes(blob)
+                        try:
+                            info=studio.probe(tmp)
+                            tracks=[s for s in info['streams'] if s['codec_type']=='video']
+                            if not tracks or tracks[0].get('codec_name') not in ('png','mjpeg','webp'): raise ValueError('Choose a JPEG, PNG or WebP photo')
+                            if tracks[0].get('width',0)*tracks[0].get('height',0)>30_000_000: raise ValueError('Choose a photo smaller than 30 megapixels')
+                            result=subprocess.run(['ffmpeg','-v','error','-y','-i',str(tmp),'-vf','pad=ceil(iw/2)*2:ceil(ih/2)*2','-frames:v','1',str(converted)],capture_output=True,timeout=30)
+                            if result.returncode or not converted.exists(): raise ValueError('This photo could not be decoded')
+                            converted.replace(p / 'portrait.png')
+                        finally:
+                            tmp.unlink(missing_ok=True); converted.unlink(missing_ok=True)
+                        profile=read_json(p / 'profile.json'); profile.update(face_source='photo',portrait='/media/'+pid+'/portrait.png',updated=time.time())
+                        profile['samples']['photo']=profile['portrait']; save_json(p / 'profile.json',profile)
+                        return self.send(profile)
                     dest = p / (kind + '.webm'); tmp = p / (kind + '.upload'); tmp.write_bytes(blob)
                     try:
                         info=studio.probe(tmp)
@@ -277,6 +293,7 @@ class Handler(BaseHTTPRequestHandler):
                     profile['updated']=time.time()
                     profile['samples'][kind] = '/media/' + pid + '/' + kind + '.webm'
                     if kind == 'face':
+                        profile['face_source']='video'
                         profile['portrait_seconds'] = 0
                         studio.portrait(dest,0,p / 'portrait.png')
                         profile['portrait']='/media/'+pid+'/portrait.png'
@@ -299,6 +316,7 @@ class Handler(BaseHTTPRequestHandler):
                     studio.portrait(p / 'face.webm',seconds,p / 'portrait.png')
                     profile = read_json(p / 'profile.json')
                     profile['portrait_seconds'] = seconds
+                    profile['face_source']='video'
                     profile['updated']=time.time()
                     profile['portrait']='/media/'+obj['profile']+'/portrait.png'
                     save_json(p / 'profile.json',profile)
@@ -319,7 +337,7 @@ class Handler(BaseHTTPRequestHandler):
                     allowed=('preview',) if route=='/api/render' else ('failed','cancelled','interrupted')
                     if j['state'] not in allowed: raise ValueError('This job cannot be started in its current state')
                     if route=='/api/render':
-                        if not (work / 'face.webm').exists(): raise ValueError('Record a face video, then create a new voice preview')
+                        if not ((work / 'face.png').exists() or (work / 'face.webm').exists()): raise ValueError('Upload a photo or record a face video, then create a new voice preview')
                         j['kind']='video'
                     if obj.get('cpu'): j['cpu_render']=True
                     j.update(state='queued',stage='Waiting in queue',step='queued',progress=None,updated=time.time())
