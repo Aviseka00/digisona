@@ -92,3 +92,5 @@ Use your own recordings or recordings you have permission to use. The app create
 ## Workspace improvements
 
 Uploaded videos with audio automatically supply the normal voice reference when none exists. Existing voice samples are preserved. Photo and video portraits are retained separately and can be switched. Personas can be renamed. Upload processing no longer holds the global job lock, so cancellation remains responsive while another upload is converted.
+
+Detail mode can exceed a 4 GB GPU's memory and automatically use CPU. Draft is recommended on GTX 1050 4 GB. Face inference now uses bounded CPU threading, and retry diagnostics are scoped to the current process instead of old log errors.

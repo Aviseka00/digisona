@@ -13,7 +13,7 @@ jobs:
           node-version: '22'
       - name: Python and JavaScript syntax
         run: |
-          python -m py_compile server.py studio.py voice_worker.py download_assets.py verify_install.py verify_setup.py
+          python -m py_compile server.py studio.py voice_worker.py face_worker.py download_assets.py verify_install.py verify_setup.py
           node --check web/app.js
           node --check web/enhancements.js
           node --check web/workspace.js

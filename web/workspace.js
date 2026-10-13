@@ -23,3 +23,9 @@ const cameraPreview=$('.preview'),cameraHint=cameraPreview.nextElementSibling,ca
 cameraDetails.append(cameraPreview,cameraHint,cameraActions,cameraState);
 faceCard.querySelector('.card-heading').after($('.portrait-tools'));
 faceCard.append(cameraDetails);
+const cpuRetry=document.createElement('button');cpuRetry.className='secondary';cpuRetry.textContent='Retry on CPU';cpuRetry.hidden=true;$('#retry').after(cpuRetry);
+cpuRetry.onclick=safeAction(async()=>{job=await api('/api/retry',{id:job.id,cpu:true});renderJob();});
+const workspaceJobRender=renderJob;
+renderJob=function(){workspaceJobRender();cpuRetry.hidden=!job||!['failed','cancelled','interrupted'].includes(job.state);if(!job?.audio)$('#output-audio').pause();if(job?.state!=='done')$('#output-video').pause();};
+$('#output-audio').addEventListener('play',()=>$('#output-video').pause());
+$('#output-video').addEventListener('play',()=>$('#output-audio').pause());

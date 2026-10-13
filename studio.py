@@ -37,10 +37,10 @@ def portrait(video, seconds, output):
     if result.returncode or not output.exists() or output.stat().st_size<100: raise ValueError('Could not extract that portrait frame. Select an earlier frame.')
     return info
 
-def log_tail(path, size=12000):
+def log_tail(path, size=12000, start=0):
     if not path.exists(): return ''
     with path.open('rb') as stream:
-        stream.seek(max(0,path.stat().st_size-size)); return stream.read().decode('utf-8',errors='replace')
+        stream.seek(max(start,path.stat().st_size-size)); return stream.read().decode('utf-8',errors='replace')
 
 def render_progress(log):
     matches = re.findall(r'Face Renderer::\s*(\d+)%[^\r\n]*?\|\s*(\d+)/(\d+)',log)

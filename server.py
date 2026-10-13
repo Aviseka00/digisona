@@ -64,6 +64,8 @@ def status():
 def run(jid, args, cwd=None):
     if jid in CANCEL: raise RuntimeError('Cancelled')
     log = JOBS / (jid + '.log')
+    log_start=log.stat().st_size if log.exists() else 0
+    update(jid,process_log_start=log_start)
     with log.open('ab') as out:
         proc = subprocess.Popen(args, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         with LOCK: ACTIVE[jid] = proc
@@ -76,7 +78,7 @@ def run(jid, args, cwd=None):
                 time.sleep(.3)
             if jid in CANCEL: raise RuntimeError('Cancelled')
             if proc.returncode:
-                raise RuntimeError(studio.failure_message(studio.log_tail(log)))
+                raise RuntimeError(studio.failure_message(studio.log_tail(log,start=log_start)))
         finally:
             with LOCK: ACTIVE.pop(jid, None)
 
@@ -115,6 +117,7 @@ def enqueue(obj):
     if kind not in ('voice','video'): raise ValueError('Invalid job type')
     if composition not in ('portrait','full'): raise ValueError('Invalid composition')
     if not 1 <= len(script) <= 1200: raise ValueError('Use 1–1200 characters. Short sentences are best for the first test.')
+    if quality=='detail' and len(script)>240:raise ValueError('Detail mode supports up to 240 characters to limit memory use. Choose Draft for longer scripts.')
     speed = float(obj.get('speed',1)); expression = float(obj.get('expression',.5))
     if not .75 <= speed <= 1.25 or not 0 <= expression <= 1: raise ValueError('Speed or expression is outside the supported range')
     pronunciations = obj.get('pronunciations','')
@@ -174,7 +177,7 @@ def worker():
                 update(jid, stage='Generating your voice on CPU',step='voice')
                 script = work / 'script.txt'; script.write_text(j.get('spoken_script',j['script']), encoding='utf-8')
                 run(jid, [str(py),str(ROOT / 'voice_worker.py'),'--text',str(script),'--reference',str(work / 'reference.wav'),'--output',str(work / 'base-speech.wav'),'--device',cfg.get('voice_device','cpu'),'--exaggeration',str(j.get('expression',.5))])
-            run(jid,['ffmpeg','-y','-i',str(work / 'base-speech.wav'),'-af','atempo='+str(j.get('speed',1)),str(work / 'speech.wav')])
+            run(jid,['ffmpeg','-y','-i',str(work / 'base-speech.wav'),'-af','atempo='+str(j.get('speed',1))+',apad=whole_dur=0.2',str(work / 'speech.wav')])
             audio_url='/media/jobs/'+jid+'/speech.wav'
             update(jid,audio=audio_url,duration=studio.probe(work / 'speech.wav')['duration'])
             if j.get('kind')=='voice':
@@ -184,11 +187,11 @@ def worker():
                 run(jid, ['ffmpeg','-y','-ss',str(j.get('portrait_seconds',0)),'-i',str(work / 'face.webm'),'-frames:v','1',str(work / 'face.png')])
             update(jid, stage='Animating your face',step='render')
             sadpy = cfg.get('sadtalker_python') or str(ROOT / '.venv-sad/Scripts/python.exe')
-            args=[sadpy,str(sad / 'inference.py'),'--driven_audio',str(work / 'speech.wav'),'--source_image',str(work / 'face.png'),'--result_dir',str(work / 'render'),'--size','512' if j.get('quality')=='detail' else '256','--batch_size','1','--preprocess','full' if j.get('composition')=='full' else 'crop','--still']
+            args=[sadpy,str(ROOT / 'face_worker.py'),str(sad / 'inference.py'),'--driven_audio',str(work / 'speech.wav'),'--source_image',str(work / 'face.png'),'--result_dir',str(work / 'render'),'--size','512' if j.get('quality')=='detail' else '256','--batch_size','1','--preprocess','full' if j.get('composition')=='full' else 'crop','--still']
             if j.get('cpu_render') or cfg.get('render_device')=='cpu': args.append('--cpu')
             try: run(jid,args,cwd=str(sad))
-            except RuntimeError:
-                if jid in CANCEL or j.get('cpu_render') or 'out of memory' not in studio.log_tail(JOBS / (jid+'.log')).lower(): raise
+            except RuntimeError as error:
+                if jid in CANCEL or '--cpu' in args or 'GPU memory ran out' not in str(error): raise
                 update(jid,stage='GPU memory was full. Rendering on CPU.',warning='Automatic CPU fallback is slower.',cpu_render=True)
                 run(jid,args+['--cpu'],cwd=str(sad))
             videos = list((work / 'render').rglob('*.mp4'))
@@ -229,7 +232,7 @@ class Handler(BaseHTTPRequestHandler):
                 jobs=all_jobs()
                 for j in jobs:
                     if j['state']=='running' and j.get('step')=='render':
-                        j['progress']=studio.render_progress(studio.log_tail(JOBS / (j['id']+'.log')))
+                        j['progress']=studio.render_progress(studio.log_tail(JOBS / (j['id']+'.log'),start=j.get('process_log_start',0)))
                 return self.send(sorted(jobs,key=lambda j:j['created'],reverse=True))
             if route.startswith('/api/log/'):
                 p = job_path(route.rsplit('/',1)[-1]).with_suffix('.log')
