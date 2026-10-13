@@ -46,7 +46,7 @@ If importing PyTorch reports a missing DLL, install Microsoft's supported Visual
 3. Record English speech in your normal voice. Add happy, calm and serious samples if desired. Use the microphone meter and sample-quality checks. These checks assess level, clipping and quiet sections; they do not measure identity similarity or background noise.
 4. Open **Create**, type your script, and choose a voice sample. Set speed and expression. Optional pronunciation substitutions use `word = spoken spelling`, one per line.
 5. Choose **Preview my voice**. Listen first, then approve the video render. Video generation reuses your approved speech.
-6. Choose focused portrait or original framing. Original framing preserves the source background and dimensions; the synthesized face still uses a 256-pixel model. A 720p output is not a native HD face reconstruction.
+6. Choose focused portrait or original framing. Original framing preserves the source background and dimensions; choose Draft (256 pixels) or Detail (512 pixels). Detail requires more memory and time. A 720p output is not a native HD face reconstruction.
 7. Download MP4 or voice WAV. Search, filter, retry, cancel and delete jobs in the local library.
 
 Photos are limited to 20 MB and 30 megapixels. Audio/video uploads are limited to 100 MB and 90 seconds. Imported face videos use the first 20 seconds; voice references use the first 30 seconds. Scripts support up to 1200 characters. Start with a short sentence before generating longer clips.
@@ -88,3 +88,7 @@ Digisona app code is MIT licensed. Model packages, downloaded assets and tools r
 - uv: https://github.com/astral-sh/uv
 
 Use your own recordings or recordings you have permission to use. The app creates a talking-video likeness, not a full 3D body, a memory/personality model, or an indistinguishable copy.
+
+## Workspace improvements
+
+Uploaded videos with audio automatically supply the normal voice reference when none exists. Existing voice samples are preserved. Photo and video portraits are retained separately and can be switched. Personas can be renamed. Upload processing no longer holds the global job lock, so cancellation remains responsive while another upload is converted.

@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 import studio
+from contextlib import contextmanager
 
 ROOT = Path(__file__).resolve().parent
 os.environ['PATH'] = str(ROOT / 'tools' / 'bin') + os.pathsep + os.environ.get('PATH', '')
@@ -15,15 +16,25 @@ DATA.mkdir(exist_ok=True)
 JOBS = DATA / 'jobs'
 JOBS.mkdir(exist_ok=True)
 LOCK = threading.RLock()
+UPLOAD_LOCK=threading.Lock()
+UPLOADING=set()
+@contextmanager
+def uploading(pid):
+    with UPLOAD_LOCK:
+        with LOCK: UPLOADING.add(pid)
+        try:yield
+        finally:
+            with LOCK:UPLOADING.discard(pid)
 CANCEL = set()
 ACTIVE = {}
 MAX_UPLOAD = 100 * 1024 * 1024
 ID = re.compile(r'^[a-f0-9]{32}$')
 
 def save_json(p, value):
-    tmp = p.with_suffix('.tmp')
-    tmp.write_text(json.dumps(value, indent=2), encoding='utf-8')
-    tmp.replace(p)
+    with LOCK:
+        tmp = p.with_suffix('.tmp')
+        tmp.write_text(json.dumps(value, indent=2), encoding='utf-8')
+        tmp.replace(p)
 
 def read_json(p):
     return json.loads(p.read_text(encoding='utf-8'))
@@ -97,6 +108,8 @@ def enqueue(obj):
     tone = obj.get('tone','normal')
     kind = obj.get('kind','video')
     composition = obj.get('composition','portrait')
+    quality=obj.get('quality','draft')
+    if quality not in ('draft','detail'):raise ValueError('Choose draft or detail quality')
     script = str(obj.get('script','')).strip()
     if tone not in ('normal','happy','calm','serious'): raise ValueError('Invalid voice tone')
     if kind not in ('voice','video'): raise ValueError('Invalid job type')
@@ -118,7 +131,9 @@ def enqueue(obj):
     if not info['ready']: raise ValueError('Complete local model setup first')
     if composition=='full' and not (sad / 'checkpoints/mapping_00109-model.pth.tar').exists(): raise ValueError('Full-frame checkpoint is not installed yet; choose portrait')
     if info['free_gb']<2: raise ValueError('At least 2 GB free disk space is required')
+    if quality=='detail' and not (sad / 'checkpoints/SadTalker_V0.0.2_512.safetensors').exists():raise ValueError('Install the 512-pixel model using install.cmd before selecting detail mode')
     with LOCK:
+        if obj['profile'] in UPLOADING: raise ValueError('Your upload is still processing. Wait for it to finish before generating.')
         queue_room()
         jid=uuid.uuid4().hex; work=JOBS / jid; work.mkdir()
         profile=read_json(p / 'profile.json')
@@ -126,7 +141,7 @@ def enqueue(obj):
         if (p / 'face.webm').exists(): shutil.copy2(p / 'face.webm',work / 'face.webm')
         if (p / 'portrait.png').exists(): shutil.copy2(p / 'portrait.png',work / 'face.png')
         j={'id':jid,'profile':obj['profile'],'profile_name':profile['name'],'tone':tone,'script':script,'spoken_script':spoken,'kind':kind,'speed':speed,'expression':expression,'composition':composition,'portrait_seconds':profile.get('portrait_seconds',0),'created':time.time(),'state':'queued','stage':'Waiting in queue','step':'queued','attempts':0}
-        save_json(job_path(jid),j)
+        j['quality']=quality;save_json(job_path(jid),j)
     return j
 
 def worker():
@@ -169,7 +184,7 @@ def worker():
                 run(jid, ['ffmpeg','-y','-ss',str(j.get('portrait_seconds',0)),'-i',str(work / 'face.webm'),'-frames:v','1',str(work / 'face.png')])
             update(jid, stage='Animating your face',step='render')
             sadpy = cfg.get('sadtalker_python') or str(ROOT / '.venv-sad/Scripts/python.exe')
-            args=[sadpy,str(sad / 'inference.py'),'--driven_audio',str(work / 'speech.wav'),'--source_image',str(work / 'face.png'),'--result_dir',str(work / 'render'),'--size','256','--batch_size','1','--preprocess','full' if j.get('composition')=='full' else 'crop','--still']
+            args=[sadpy,str(sad / 'inference.py'),'--driven_audio',str(work / 'speech.wav'),'--source_image',str(work / 'face.png'),'--result_dir',str(work / 'render'),'--size','512' if j.get('quality')=='detail' else '256','--batch_size','1','--preprocess','full' if j.get('composition')=='full' else 'crop','--still']
             if j.get('cpu_render') or cfg.get('render_device')=='cpu': args.append('--cpu')
             try: run(jid,args,cwd=str(sad))
             except RuntimeError:
@@ -246,7 +261,7 @@ class Handler(BaseHTTPRequestHandler):
                     chunk = f.read(min(65536,remaining))
                     if not chunk: break
                     self.wfile.write(chunk); remaining -= len(chunk)
-        except (BrokenPipeError,ConnectionResetError): pass
+        except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError): pass
         except Exception as exc: self.send({'error':str(exc)},400)
     def do_POST(self):
         try:
@@ -256,7 +271,7 @@ class Handler(BaseHTTPRequestHandler):
                 if kind not in ('face','photo','voice-normal','voice-happy','voice-calm','voice-serious'): raise ValueError('Invalid recording type')
                 p = profile_dir(pid)
                 blob = self.body(MAX_UPLOAD)
-                with LOCK:
+                with uploading(pid):
                     if any(read_json(q)['profile'] == pid and read_json(q)['state'] in ('queued','running') for q in JOBS.glob('*.json')):
                         raise ValueError('Wait for generation to finish before replacing this persona recording')
                     if kind=='photo':
@@ -270,6 +285,7 @@ class Handler(BaseHTTPRequestHandler):
                             result=subprocess.run(['ffmpeg','-v','error','-y','-i',str(tmp),'-vf','pad=ceil(iw/2)*2:ceil(ih/2)*2','-frames:v','1',str(converted)],capture_output=True,timeout=30)
                             if result.returncode or not converted.exists(): raise ValueError('This photo could not be decoded')
                             converted.replace(p / 'portrait.png')
+                            shutil.copy2(p / 'portrait.png',p / 'photo.png')
                         finally:
                             tmp.unlink(missing_ok=True); converted.unlink(missing_ok=True)
                         profile=read_json(p / 'profile.json'); profile.update(face_source='photo',portrait='/media/'+pid+'/portrait.png',updated=time.time())
@@ -288,6 +304,10 @@ class Handler(BaseHTTPRequestHandler):
                         result=subprocess.run(args+[str(converted)],capture_output=True,timeout=180)
                         if result.returncode: raise ValueError('Recording conversion failed. Try a different file.')
                         converted.replace(dest)
+                        if kind=='face' and not (p / 'voice-normal.webm').exists() and any(s['codec_type']=='audio' for s in info['streams']):
+                            extracted=p / 'video-voice.webm'
+                            audio=subprocess.run(['ffmpeg','-v','error','-y','-i',str(tmp),'-t','30','-vn','-c:a','libopus','-b:a','128k',str(extracted)],capture_output=True,timeout=60)
+                            if audio.returncode==0:extracted.replace(p / 'voice-normal.webm')
                     finally: tmp.unlink(missing_ok=True)
                     profile = read_json(p / 'profile.json')
                     profile['updated']=time.time()
@@ -296,12 +316,34 @@ class Handler(BaseHTTPRequestHandler):
                         profile['face_source']='video'
                         profile['portrait_seconds'] = 0
                         studio.portrait(dest,0,p / 'portrait.png')
+                        shutil.copy2(p / 'portrait.png',p / 'video-portrait.png')
                         profile['portrait']='/media/'+pid+'/portrait.png'
+                        if (p / 'voice-normal.webm').exists():
+                            profile['samples']['voice-normal']='/media/'+pid+'/voice-normal.webm'
                     else:
                         profile.setdefault('analysis',{})[kind]=studio.analyze_voice(dest)
                     save_json(p / 'profile.json',profile)
                 return self.send(profile)
             obj = json.loads(self.body())
+            if route == '/api/rename-profile':
+                p=profile_dir(obj.get('id',''));name=str(obj.get('name','')).strip()[:80]
+                if not name:raise ValueError('Enter a persona name')
+                with LOCK:
+                    profile=read_json(p / 'profile.json');profile.update(name=name,updated=time.time());save_json(p / 'profile.json',profile)
+                return self.send(profile)
+            if route == '/api/face-source':
+                pid=obj.get('profile','');p=profile_dir(pid);source=obj.get('source')
+                if source not in ('photo','video'):raise ValueError('Choose photo or video')
+                with LOCK:
+                    if pid in UPLOADING:raise ValueError('Wait for your upload to finish')
+                    selected=p / ('photo.png' if source=='photo' else 'video-portrait.png')
+                    if not selected.exists():
+                        profile=read_json(p / 'profile.json')
+                        if source=='photo' and profile.get('face_source')=='photo':shutil.copy2(p / 'portrait.png',selected)
+                        elif source=='video' and (p / 'face.webm').exists():studio.portrait(p / 'face.webm',float(profile.get('portrait_seconds',0)),selected)
+                        else:raise ValueError('Upload this source first')
+                    shutil.copy2(selected,p / 'portrait.png');profile=read_json(p / 'profile.json');profile.update(face_source=source,portrait='/media/'+pid+'/portrait.png',updated=time.time());save_json(p / 'profile.json',profile)
+                return self.send(profile)
             if route == '/api/profiles':
                 name = str(obj.get('name','')).strip()[:80]
                 if not name: raise ValueError('Enter a profile name')
@@ -317,6 +359,7 @@ class Handler(BaseHTTPRequestHandler):
                     profile = read_json(p / 'profile.json')
                     profile['portrait_seconds'] = seconds
                     profile['face_source']='video'
+                    shutil.copy2(p / 'portrait.png',p / 'video-portrait.png')
                     profile['updated']=time.time()
                     profile['portrait']='/media/'+obj['profile']+'/portrait.png'
                     save_json(p / 'profile.json',profile)
@@ -363,6 +406,7 @@ class Handler(BaseHTTPRequestHandler):
             if route == '/api/delete-profile':
                 p = profile_dir(obj['id'])
                 with LOCK:
+                    if obj['id'] in UPLOADING:raise ValueError('Wait for your upload to finish before deleting the persona')
                     related = [read_json(q) for q in JOBS.glob('*.json') if read_json(q)['profile'] == obj['id']]
                     if any(j['state'] in ('queued','running') for j in related): raise ValueError('Cancel the active job and wait for it to stop before deleting')
                     shutil.rmtree(p)

@@ -34,7 +34,7 @@ def download(url, dest):
 if __name__ == '__main__':
     base = 'https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/'
     sad = ROOT / 'models' / 'SadTalker'
-    assets = [(base + name,sad / 'checkpoints' / name) for name in ['mapping_00229-model.pth.tar','mapping_00109-model.pth.tar','SadTalker_V0.0.2_256.safetensors']]
+    assets = [(base + name,sad / 'checkpoints' / name) for name in ['mapping_00229-model.pth.tar','mapping_00109-model.pth.tar','SadTalker_V0.0.2_256.safetensors','SadTalker_V0.0.2_512.safetensors']]
     assets += [('https://github.com/xinntao/facexlib/releases/download/v0.1.0/detection_Resnet50_Final.pth',sad / 'gfpgan/weights/detection_Resnet50_Final.pth'),('https://github.com/xinntao/facexlib/releases/download/v0.1.0/alignment_WFLW_4HG.pth',sad / 'gfpgan/weights/alignment_WFLW_4HG.pth')]
     archive = ROOT / 'tools' / 'ffmpeg.zip'
     assets.append(('https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',archive))

@@ -16,6 +16,7 @@ jobs:
           python -m py_compile server.py studio.py voice_worker.py download_assets.py verify_install.py verify_setup.py
           node --check web/app.js
           node --check web/enhancements.js
+          node --check web/workspace.js
       - name: Installer syntax
         shell: powershell
         run: |
